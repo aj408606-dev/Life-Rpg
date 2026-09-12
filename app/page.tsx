@@ -4,135 +4,249 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
 export default function LifeRPG() {
-  const [user, setUser] = useState({ level: 1, xp: 0, gold: 0, streak: 1 });
-  const [tasks, setTasks] = useState([]);
+  const [session, setSession] = useState<any>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('signup');
+  const [authError, setAuthError] = useState('');
+
+  const [userStats, setUserStats] = useState({ level: 1, xp: 0, gold: 0, streak: 1 });
+  const [tasks, setTasks] = useState<any[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('Strength');
   const [loading, setLoading] = useState(true);
 
-  // Fetch tasks and user stats on load
+  // 1. Check user session on load
   useEffect(() => {
-    fetchData();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+        fetchUserData(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        fetchUserData(session.user.id);
+      } else {
+        setTasks([]);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  async function fetchData() {
+  // 2. Fetch User Stats and Tasks
+  async function fetchUserData(userId: string) {
     setLoading(true);
-    // Fetch tasks
-    const { data: taskData } = await supabase.from('tasks').select('*').order('id', { ascending: false });
-    if (taskData) setTasks(taskData);
 
-    // Fetch or initialize user stats
-    const { data: userData } = await supabase.from('users').select('*').limit(1);
-    if (userData && userData.length > 0) {
-      setUser(userData[0]);
+    // Fetch user profile stats
+    const { data: profile } = await supabase.from('users').select('*').eq('id', userId).single();
+    if (profile) {
+      setUserStats(profile);
+    } else {
+      // Initialize profile row if it doesn't exist
+      const defaultProfile = { id: userId, email: session?.user?.email, level: 1, xp: 0, gold: 0, streak: 1 };
+      await supabase.from('users').insert([defaultProfile]);
+      setUserStats(defaultProfile);
     }
+
+    // Fetch user tasks
+    const { data: userTasks } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('user_id', userId)
+      .order('id', { ascending: false });
+
+    if (userTasks) setTasks(userTasks);
     setLoading(false);
   }
 
-  // Add a new Quest (Task)
-  async function handleAddTask(e) {
+  // 3. Handle Signup / Login
+  async function handleAuth(e: React.FormEvent) {
     e.preventDefault();
-    if (!title.trim()) return;
+    setAuthError('');
+
+    if (authMode === 'signup') {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) setAuthError(error.message);
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) setAuthError(error.message);
+    }
+  }
+
+  // 4. Add Task
+  async function handleAddTask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim() || !session) return;
 
     const newTask = {
+      user_id: session.user.id,
       title,
       category,
       xp_reward: category === 'Intellect' ? 60 : 50,
-      completed: false
+      completed: false,
     };
 
-    const { data, error } = await supabase.from('tasks').insert([newTask]).select();
+    const { data } = await supabase.from('tasks').insert([newTask]).select();
     if (data) {
       setTasks([data[0], ...tasks]);
       setTitle('');
     }
   }
 
-  // Complete a Quest & Level Up Logic
-  async function handleCompleteTask(task) {
-    if (task.completed) return;
+  // 5. Complete Task & Level Up
+  async function handleCompleteTask(task: any) {
+    if (task.completed || !session) return;
 
-    // Update task in database
     await supabase.from('tasks').update({ completed: true }).eq('id', task.id);
 
-    // Calculate progression
     const xpGained = task.xp_reward;
     const goldGained = 20;
-    let newXp = user.xp + xpGained;
-    let newLevel = user.level;
-    const xpNeeded = user.level * 100; // Non-linear progression
+    let newXp = userStats.xp + xpGained;
+    let newLevel = userStats.level;
+    const xpNeeded = userStats.level * 100;
 
     if (newXp >= xpNeeded) {
       newLevel += 1;
-      newXp = newXp - xpNeeded; // Carry over XP
+      newXp = newXp - xpNeeded;
     }
 
-    const updatedUser = {
-      ...user,
+    const updated = {
+      ...userStats,
       xp: newXp,
       level: newLevel,
-      gold: user.gold + goldGained
+      gold: userStats.gold + goldGained,
     };
 
-    setUser(updatedUser);
+    setUserStats(updated);
     setTasks(tasks.map((t) => (t.id === task.id ? { ...t, completed: true } : t)));
 
-    // Save user stats to database
-    if (user.id) {
-      await supabase.from('users').update(updatedUser).eq('id', user.id);
-    } else {
-      const { data } = await supabase.from('users').insert([updatedUser]).select();
-      if (data) setUser(data[0]);
-    }
+    await supabase.from('users').update(updated).eq('id', session.user.id);
   }
 
-  const xpPercent = Math.min(100, Math.round((user.xp / (user.level * 100)) * 100));
+  // --- Render: Login / Signup Form ---
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100">
+        <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl w-full max-w-md shadow-2xl">
+          <h1 className="text-3xl font-black text-center text-cyan-400 mb-2">LIFE RPG</h1>
+          <p className="text-center text-slate-400 text-sm mb-6">Gamify your daily quests and level up your life</p>
+
+          {authError && (
+            <div className="bg-red-500/10 border border-red-500 text-red-400 p-3 rounded-lg text-sm mb-4">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Email</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500"
+                placeholder="hero@example.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Password</label>
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500"
+                placeholder="••••••••"
+              />
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold p-3 rounded-lg transition"
+            >
+              {authMode === 'signup' ? 'Create Hero Account' : 'Enter the Realm (Login)'}
+            </button>
+          </form>
+
+          <p className="text-center text-xs text-slate-400 mt-4">
+            {authMode === 'signup' ? 'Already an adventurer? ' : "Don't have an account? "}
+            <button
+              onClick={() => setAuthMode(authMode === 'signup' ? 'login' : 'signup')}
+              className="text-cyan-400 underline font-semibold"
+            >
+              {authMode === 'signup' ? 'Login' : 'Sign Up'}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Render: Main Game Dashboard ---
+  const xpPercent = Math.min(100, Math.round((userStats.xp / (userStats.level * 100)) * 100));
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans">
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
       <div className="max-w-3xl mx-auto space-y-6">
         
-        {/* Character Dashboard Header */}
-        <header className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg shadow-cyan-950/20">
+        {/* Header Bar with Signout */}
+        <div className="flex justify-between items-center">
+          <span className="text-sm text-slate-400">Logged in as: <b className="text-cyan-400">{session.user.email}</b></span>
+          <button
+            onClick={() => supabase.auth.signOut()}
+            className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg text-slate-300 transition"
+          >
+            Sign Out
+          </button>
+        </div>
+
+        {/* Hero Card */}
+        <header className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
           <div className="flex justify-between items-center mb-4">
             <div>
-              <span className="text-xs font-semibold uppercase tracking-wider text-cyan-400">Hero Status</span>
-              <h1 className="text-3xl font-black tracking-tight text-white">Level {user.level} Adventurer</h1>
+              <span className="text-xs font-semibold uppercase tracking-wider text-cyan-400">Character Level</span>
+              <h1 className="text-3xl font-black text-white">Level {userStats.level} Adventurer</h1>
             </div>
             <div className="flex gap-4">
               <div className="bg-amber-950/40 border border-amber-500/30 px-4 py-2 rounded-lg text-center">
                 <span className="text-xs text-amber-400 block font-bold">GOLD</span>
-                <span className="text-lg font-black text-amber-300">🪙 {user.gold}</span>
+                <span className="text-lg font-black text-amber-300">🪙 {userStats.gold}</span>
               </div>
               <div className="bg-red-950/40 border border-red-500/30 px-4 py-2 rounded-lg text-center">
                 <span className="text-xs text-red-400 block font-bold">STREAK</span>
-                <span className="text-lg font-black text-red-300">🔥 {user.streak}d</span>
+                <span className="text-lg font-black text-red-300">🔥 {userStats.streak}d</span>
               </div>
             </div>
           </div>
 
-          {/* XP Bar */}
           <div>
             <div className="flex justify-between text-xs text-slate-400 mb-1 font-medium">
               <span>EXP Progress</span>
-              <span>{user.xp} / {user.level * 100} XP ({xpPercent}%)</span>
+              <span>{userStats.xp} / {userStats.level * 100} XP ({xpPercent}%)</span>
             </div>
             <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
-              <div 
-                className="bg-cyan-500 h-full transition-all duration-500 ease-out" 
+              <div
+                className="bg-cyan-500 h-full transition-all duration-500 ease-out"
                 style={{ width: `${xpPercent}%` }}
               ></div>
             </div>
           </div>
         </header>
 
-        {/* Quest Creation Form */}
+        {/* Add Quest */}
         <section className="bg-slate-900 border border-slate-800 rounded-xl p-6">
           <h2 className="text-lg font-bold mb-4 text-slate-200">Embark on a New Quest</h2>
           <form onSubmit={handleAddTask} className="flex flex-col sm:flex-row gap-3">
             <input
               type="text"
-              placeholder="E.g., Complete 30 min workout, Read 10 pages..."
+              placeholder="e.g. 1 hour study, 30 min workout..."
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
@@ -142,9 +256,9 @@ export default function LifeRPG() {
               onChange={(e) => setCategory(e.target.value)}
               className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
             >
-              <option value="Strength">Strength (Gym/Fitness)</option>
-              <option value="Intellect">Intellect (Coding/Study)</option>
-              <option value="Discipline">Discipline (Habit)</option>
+              <option value="Strength">Strength (Fitness)</option>
+              <option value="Intellect">Intellect (Study/Code)</option>
+              <option value="Discipline">Discipline (Habits)</option>
             </select>
             <button
               type="submit"
@@ -155,13 +269,13 @@ export default function LifeRPG() {
           </form>
         </section>
 
-        {/* Active Quests List */}
+        {/* Quests List */}
         <section className="space-y-3">
           <h2 className="text-xl font-bold text-slate-200">Active Quests</h2>
           {loading ? (
-            <p className="text-slate-500">Loading your adventure...</p>
+            <p className="text-slate-500">Retrieving quest log...</p>
           ) : tasks.length === 0 ? (
-            <p className="text-slate-500">No active quests. Add one above to begin earning rewards!</p>
+            <p className="text-slate-500">No quests logged yet. Add one above to begin!</p>
           ) : (
             tasks.map((task) => (
               <div
@@ -173,7 +287,7 @@ export default function LifeRPG() {
                 }`}
               >
                 <div>
-                  <h3 className={`font-semibold text-base ${task.completed ? 'line-through text-slate-400' : 'text-white'}`}>
+                  <h3 className={`font-semibold ${task.completed ? 'line-through text-slate-400' : 'text-white'}`}>
                     {task.title}
                   </h3>
                   <div className="flex gap-2 text-xs text-slate-400 mt-1">
