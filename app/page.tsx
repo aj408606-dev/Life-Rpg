@@ -1,11 +1,37 @@
 "use client";
 
-import React, { useState, useEffect, FormEvent } from 'react';
+import React, { useState, useEffect, useRef, FormEvent } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // ==========================================
 // SUPABASE INITIALIZATION
 // ==========================================
+// NOTE: The key below is a Supabase "publishable" (anon) key — these are
+// designed to be exposed in client-side code (protected by Row Level
+// Security on the `profiles` table), unlike service-role keys.
+//
+// Expected `profiles` table schema (run once in Supabase SQL editor):
+//
+// create table profiles (
+//   id uuid primary key references auth.users(id),
+//   name text,
+//   email text,
+//   xp int default 0,
+//   gold int default 100,
+//   streak int default 1,
+//   last_login date default current_date,
+//   attrs jsonb default '{"strength":1,"intellect":1,"discipline":1,"social":1}',
+//   completed_count int default 0,
+//   tasks jsonb default '[]',
+//   inventory jsonb default '[]',
+//   equipped jsonb default '{"head":null,"armor":null,"shoes":null,"pet":null}',
+//   badges jsonb default '[]',
+//   last_complete bigint default 0
+// );
+// alter table profiles enable row level security;
+// create policy "Users can manage own profile" on profiles
+//   for all using (auth.uid() = id);
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://axpzkwdcecrghvcqpwin.supabase.co';
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_Dte0ENwzDZdaGH6QHkxTaw_fQhY4yi4';
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -92,6 +118,61 @@ const levelOf = (xp: number) => {
   return { level: l, into: xp - used, need: l * 120 };
 };
 
+// Computes the new streak/lastLogin pair based on how many days have
+// passed since the user's last recorded login.
+const computeStreak = (lastLoginISO: string, currentStreak: number) => {
+  const todayStr = today();
+  if (lastLoginISO === todayStr) {
+    // Already logged in today — leave streak untouched.
+    return { streak: Math.max(1, currentStreak), lastLogin: todayStr };
+  }
+  const prev = new Date(lastLoginISO + 'T00:00:00');
+  const now = new Date(todayStr + 'T00:00:00');
+  const dayDiff = Math.round((now.getTime() - prev.getTime()) / 86400000);
+
+  if (dayDiff === 1) {
+    return { streak: currentStreak + 1, lastLogin: todayStr };
+  }
+  // Missed a day (or this is the very first login) — reset streak.
+  return { streak: 1, lastLogin: todayStr };
+};
+
+// Maps a User object to snake_case columns for Supabase.
+const toRow = (u: User) => ({
+  id: u.id,
+  name: u.name,
+  email: u.email,
+  xp: u.xp,
+  gold: u.gold,
+  streak: u.streak,
+  last_login: u.lastLogin,
+  attrs: u.attrs,
+  completed_count: u.completedCount,
+  tasks: u.tasks,
+  inventory: u.inventory,
+  equipped: u.equipped,
+  badges: u.badges,
+  last_complete: u.lastComplete,
+});
+
+// Maps a Supabase row back into a User object.
+const fromRow = (row: any): User => ({
+  id: row.id,
+  name: row.name,
+  email: row.email,
+  xp: row.xp ?? 0,
+  gold: row.gold ?? 100,
+  streak: row.streak ?? 1,
+  lastLogin: row.last_login ?? today(),
+  attrs: row.attrs ?? { strength: 1, intellect: 1, discipline: 1, social: 1 },
+  completedCount: row.completed_count ?? 0,
+  tasks: row.tasks ?? [],
+  inventory: row.inventory ?? [],
+  equipped: row.equipped ?? { head: null, armor: null, shoes: null, pet: null },
+  badges: row.badges ?? [],
+  lastComplete: row.last_complete ?? 0,
+});
+
 // ==========================================
 // GLOBAL STYLES (Injected for portability)
 // ==========================================
@@ -153,6 +234,7 @@ export default function LifeRPGApp() {
   const [nav, setNav] = useState<'dashboard' | 'shop' | 'leaderboard'>('dashboard');
   const [modal, setModal] = useState({ open: false, title: '', body: '' as React.ReactNode });
   const [localDB, setLocalDB] = useState<Record<string, User>>({});
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -162,7 +244,7 @@ export default function LifeRPGApp() {
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) fetchUserData(session.user.id, session.user.email || '');
-    });
+    }).catch(() => { /* no active session — show auth screen */ });
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
@@ -182,31 +264,61 @@ export default function LifeRPGApp() {
   }, [theme]);
 
   const fetchUserData = async (id: string, email: string) => {
-    // Attempt Supabase Fetch
-    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).single();
-    
-    if (data) {
-      setSessionUser(data as User);
-    } else {
-      // Local Mock Fallback if DB table isn't created yet
-      const mockUser: User = {
-        id, email, name: email.split('@')[0], xp: 0, gold: 100, streak: 1, lastLogin: today(),
-        attrs: { strength: 1, intellect: 1, discipline: 1, social: 1 }, completedCount: 0, tasks: [],
-        inventory: [], equipped: { head: null, armor: null, shoes: null, pet: null }, badges: [], lastComplete: 0
-      };
-      setSessionUser(mockUser);
-      setLocalDB(prev => ({ ...prev, [id]: mockUser }));
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', id).single();
+
+      if (data && !error) {
+        // Recompute the daily login streak against what's stored.
+        const existing = fromRow(data);
+        const { streak, lastLogin } = computeStreak(existing.lastLogin, existing.streak);
+        const updated = { ...existing, streak, lastLogin };
+        setSessionUser(updated);
+        setLocalDB(prev => ({ ...prev, [id]: updated }));
+        // Persist the recalculated streak/lastLogin immediately.
+        supabase.from('profiles').upsert(toRow(updated)).then(() => {});
+        return;
+      }
+    } catch {
+      // Table may not exist yet, or network error — fall through to mock.
+    }
+
+    // No profile row yet (new user, or DB not set up) — create one.
+    const mockUser: User = {
+      id, email, name: email.split('@')[0], xp: 0, gold: 100, streak: 1, lastLogin: today(),
+      attrs: { strength: 1, intellect: 1, discipline: 1, social: 1 }, completedCount: 0, tasks: [],
+      inventory: [], equipped: { head: null, armor: null, shoes: null, pet: null }, badges: [], lastComplete: 0
+    };
+    setSessionUser(mockUser);
+    setLocalDB(prev => ({ ...prev, [id]: mockUser }));
+    try {
+      await supabase.from('profiles').upsert(toRow(mockUser));
+    } catch {
+      // If the profiles table doesn't exist, the app still works locally
+      // for this session — it just won't persist across reloads.
     }
   };
 
-  const patchUser = async (updater: (u: User) => void) => {
-    if (!sessionUser) return;
-    const userClone = JSON.parse(JSON.stringify(sessionUser));
-    updater(userClone);
-    setSessionUser(userClone);
-    
-    // Fallback sync for local prototype
-    if (userClone.id) setLocalDB(prev => ({ ...prev, [userClone.id!]: userClone }));
+  const patchUser = (updater: (u: User) => void) => {
+    setSessionUser(prev => {
+      if (!prev) return prev;
+      const userClone: User = JSON.parse(JSON.stringify(prev));
+      updater(userClone);
+
+      if (userClone.id) {
+        setLocalDB(db => ({ ...db, [userClone.id!]: userClone }));
+
+        // Debounce writes to Supabase so rapid interactions (e.g. typing)
+        // don't fire a request per keystroke.
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          supabase.from('profiles').upsert(toRow(userClone)).then(({ error }) => {
+            if (error) console.error('Save failed:', error.message);
+          });
+        }, 500);
+      }
+
+      return userClone;
+    });
   };
 
   const triggerBurst = () => {
@@ -247,7 +359,6 @@ export default function LifeRPGApp() {
         </div>
       )}
 
-      {/* Modal Overlay Fix applied here */}
       {modal.open && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 z-50">
           <div className="glass-panel rounded-[2rem] p-8 w-full max-w-sm pop relative overflow-hidden text-center shadow-2xl">
@@ -442,6 +553,9 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
   const [qAttr, setQAttr] = useState<Attribute>('strength');
   const [qMins, setQMins] = useState(25);
   const [qTab, setQTab] = useState<'active' | 'done'>('active');
+  // Tasks the user just checked, held visually "checked" until the save
+  // completes — prevents the checkbox from flickering back unchecked.
+  const [completingIds, setCompletingIds] = useState<string[]>([]);
 
   const getIcon = (id: string | null) => SHOP.find(s => s.id === id)?.icon || "";
 
@@ -455,28 +569,38 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
   };
 
   const handleComplete = (id: string) => {
+    if (completingIds.includes(id)) return; // already in progress
+
     const now = Date.now();
-    if (now - user.lastComplete < 1000) return openModal({ open: true, title: "Magic Restored", body: "Slow down! Let the magical energies settle before completing another quest." });
+    if (now - user.lastComplete < 1000) {
+      return openModal({ open: true, title: "Magic Restored", body: "Slow down! Let the magical energies settle before completing another quest." });
+    }
 
     const t = user.tasks.find((x: Task) => x.id === id);
     if (!t || t.done) return;
-    
+
+    setCompletingIds(ids => [...ids, id]);
+
     const beforeLevel = levelOf(user.xp).level;
     const gainXP = calculateXP(t.mins, t.attr, user.streak);
     const gainGold = Math.max(1, Math.floor(t.mins / 8));
-    
-    patchUser((u: User) => {
-      const task = u.tasks.find(x => x.id === id)!;
-      task.done = true; task.xpAwarded = gainXP; task.goldAwarded = gainGold;
-      u.xp += gainXP; u.gold += gainGold; u.attrs[task.attr] += 1; u.completedCount += 1; u.lastComplete = Date.now();
-      BADGE_DEFS.forEach(b => { if (!u.badges.includes(b.id) && b.test(u)) u.badges.push(b.id); });
-    });
-    
-    const afterLevel = levelOf(user.xp + gainXP).level;
-    if (afterLevel > beforeLevel) {
-      triggerBurst();
-      openModal({ open: true, title: "LEVEL UP!", body: <><div className="text-6xl mb-4 animate-bounce">🌟</div><p>You ascended to <b className="text-[#e8c547]">Level {afterLevel}</b>!</p></> });
-    }
+
+    setTimeout(() => {
+      patchUser((u: User) => {
+        const task = u.tasks.find(x => x.id === id)!;
+        task.done = true; task.xpAwarded = gainXP; task.goldAwarded = gainGold;
+        u.xp += gainXP; u.gold += gainGold; u.attrs[task.attr] += 1; u.completedCount += 1; u.lastComplete = Date.now();
+        BADGE_DEFS.forEach(b => { if (!u.badges.includes(b.id) && b.test(u)) u.badges.push(b.id); });
+      });
+
+      const afterLevel = levelOf(user.xp + gainXP).level;
+      if (afterLevel > beforeLevel) {
+        triggerBurst();
+        openModal({ open: true, title: "LEVEL UP!", body: <><div className="text-6xl mb-4 animate-bounce">🌟</div><p>You ascended to <b className="text-[#e8c547]">Level {afterLevel}</b>!</p></> });
+      }
+
+      setCompletingIds(ids => ids.filter(x => x !== id));
+    }, 300);
   };
 
   const handleSuggest = () => {
@@ -570,9 +694,18 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
             {taskList.length === 0 ? <li className="text-sm font-bold text-slate-400 text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/20">The quest board is empty. Await new orders.</li> : taskList.map(t => {
               const attrColor = { strength: "text-[#f43f5e]", intellect: "text-[#8b5cf6]", discipline: "text-[#e8c547]", social: "text-[#10b981]" }[t.attr];
               const attrIcon = { strength: "💪", intellect: "🧠", discipline: "🛡️", social: "💬" }[t.attr];
+              const isChecking = completingIds.includes(t.id);
               return (
                 <li key={t.id} className="flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700/50 hover:border-[#8b5cf6]/50 transition-all card-hover group shadow-sm">
-                  {qTab === 'active' ? <input type="checkbox" checked={t.done} onChange={(e) => { if (e.target.checked) setTimeout(() => handleComplete(t.id), 300); }} className="w-6 h-6 rounded border-slate-300 accent-[#8b5cf6] cursor-pointer hover:scale-110 transition-transform" /> : <span className="text-2xl filter drop-shadow-sm">✅</span>}
+                  {qTab === 'active'
+                    ? <input
+                        type="checkbox"
+                        checked={t.done || isChecking}
+                        onChange={(e) => { if (e.target.checked) handleComplete(t.id); }}
+                        disabled={isChecking}
+                        className="w-6 h-6 rounded border-slate-300 accent-[#8b5cf6] cursor-pointer hover:scale-110 transition-transform disabled:cursor-wait"
+                      />
+                    : <span className="text-2xl filter drop-shadow-sm">✅</span>}
                   <div className="flex-1">
                     <p className={`font-bold text-lg ${t.done ? 'line-through opacity-50' : ''}`}>{t.title}</p>
                     <p className="text-xs font-bold mt-1 uppercase tracking-wider text-slate-500"><span className={attrColor}>{attrIcon} {t.attr}</span> <span className="mx-2 opacity-30">|</span> {t.mins} MIN {t.xpAwarded && <><span className="mx-2 opacity-30">|</span> <span className="text-[#e8c547]">+{t.xpAwarded} XP</span></>}</p>
@@ -666,13 +799,17 @@ function Leaderboard({ localDB }: { localDB: Record<string, User> }) {
 
   useEffect(() => {
     async function loadLeaderboard() {
-      const { data } = await supabase.from('profiles').select('name, xp').order('xp', { ascending: false }).limit(10);
-      if (data && data.length > 0) {
-        setPlayers(data.map(p => ({ name: p.name, xp: p.xp, level: levelOf(p.xp).level })));
-      } else {
-        const realUsers = Object.values(localDB).map(u => ({ name: u.name, level: levelOf(u.xp).level, xp: u.xp }));
-        setPlayers(realUsers.sort((a, b) => b.xp - a.xp));
+      try {
+        const { data, error } = await supabase.from('profiles').select('name, xp').order('xp', { ascending: false }).limit(10);
+        if (data && data.length > 0 && !error) {
+          setPlayers(data.map(p => ({ name: p.name, xp: p.xp, level: levelOf(p.xp).level })));
+          return;
+        }
+      } catch {
+        // Table missing or network error — fall back to local session data.
       }
+      const realUsers = Object.values(localDB).map(u => ({ name: u.name, level: levelOf(u.xp).level, xp: u.xp }));
+      setPlayers(realUsers.sort((a, b) => b.xp - a.xp));
     }
     loadLeaderboard();
   }, [localDB]);
@@ -698,5 +835,4 @@ function Leaderboard({ localDB }: { localDB: Record<string, User> }) {
         </div>
       )}
     </div>
-  );
-}
+  )}
