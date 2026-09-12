@@ -32,8 +32,15 @@ import { createClient } from '@supabase/supabase-js';
 // create policy "Users can manage own profile" on profiles
 //   for all using (auth.uid() = id);
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://axpzkwdcecrghvcqpwin.supabase.co';
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_Dte0ENwzDZdaGH6QHkxTaw_fQhY4yi4';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error(
+    'Missing Supabase environment variables. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY.'
+  );
+}
+
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // ==========================================
@@ -563,7 +570,7 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
     e.preventDefault();
     if (!qTitle.trim()) return;
     patchUser((u: User) => {
-      u.tasks.push({ id: crypto.randomUUID(), title: qTitle.trim(), attr: qAttr, mins: qMins, done: false, created: Date.now() });
+      u.tasks.push({ id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`, title: qTitle.trim(), attr: qAttr, mins: qMins, done: false, created: Date.now() });
     });
     setQTitle('');
   };
@@ -606,7 +613,7 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
   const handleSuggest = () => {
     const lowest = (Object.entries(user.attrs) as [Attribute, number][]).sort((a, b) => a[1] - b[1])[0][0];
     const titles = { strength: "Train 20 minutes (Cardio or Lifting)", intellect: "Deep work: Code, Read, or Study", discipline: "Complete an overdue chore immediately", social: "Reach out to a friend or network" };
-    patchUser((u: User) => { u.tasks.push({ id: crypto.randomUUID(), title: titles[lowest], attr: lowest, mins: 25, done: false, created: Date.now() }); });
+    patchUser((u: User) => { u.tasks.push({ id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`, title: titles[lowest], attr: lowest, mins: 25, done: false, created: Date.now() }); });
   };
 
   const lowestAttr = (Object.entries(user.attrs) as [Attribute, number][]).sort((a, b) => a[1] - b[1])[0][0];
@@ -691,9 +698,9 @@ function Dashboard({ user, patchUser, triggerBurst, openModal }: any) {
           </form>
           
           <ul className="space-y-3">
-            {taskList.length === 0 ? <li className="text-sm font-bold text-slate-400 text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/20">The quest board is empty. Await new orders.</li> : taskList.map(t => {
-              const attrColor = { strength: "text-[#f43f5e]", intellect: "text-[#8b5cf6]", discipline: "text-[#e8c547]", social: "text-[#10b981]" }[t.attr];
-              const attrIcon = { strength: "💪", intellect: "🧠", discipline: "🛡️", social: "💬" }[t.attr];
+            {taskList.length === 0 ? <li className="text-sm font-bold text-slate-400 text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/20">The quest board is empty. Await new orders.</li> : taskList.map((t: Task) => {
+              const attrColor = { strength: "text-[#f43f5e]", intellect: "text-[#8b5cf6]", discipline: "text-[#e8c547]", social: "text-[#10b981]" }[t.attr as Attribute];
+              const attrIcon = { strength: "💪", intellect: "🧠", discipline: "🛡️", social: "💬" }[t.attr as Attribute];
               const isChecking = completingIds.includes(t.id);
               return (
                 <li key={t.id} className="flex items-center gap-4 p-4 rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700/50 hover:border-[#8b5cf6]/50 transition-all card-hover group shadow-sm">
