@@ -16,6 +16,7 @@ export default function LifeRPG() {
   const [resetCooldown, setResetCooldown] = useState(0); // seconds left before "Forgot password?" can be clicked again
 
   const [userStats, setUserStats] = useState({ level: 1, xp: 0, gold: 0, streak: 1 });
+  const [attributes, setAttributes] = useState({ strength: 0, intellect: 0, discipline: 0 });
   const [tasks, setTasks] = useState<any[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('Strength');
@@ -55,42 +56,36 @@ export default function LifeRPG() {
   }, [resetCooldown]);
 
   // 2. Fetch User Stats and Tasks
-  // email is passed in explicitly instead of reading the `session` state
-  // variable, which is stale here due to React's async state updates.
-  async function fetchUserData(userId: string, userEmail?: string) {
+  async function fetchUserData(userId: string) {
     setLoading(true);
+    const today = new Date().toISOString().slice(0, 10);
 
-    const { data: profile, error: profileError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', userId)
-      .single();
-
+    // Fetch user profile stats
+    const { data: profile } = await supabase.from('users').select('*').eq('id', userId).single();
     if (profile) {
-      setUserStats(profile);
-    } else {
-      // upsert instead of insert avoids a race condition where two
-      // near-simultaneous calls (e.g. React Strict Mode double-invoking
-      // effects in dev) both try to insert the same row.
-      const defaultProfile = {
-        id: userId,
-        email: userEmail ?? null,
-        level: 1,
-        xp: 0,
-        gold: 0,
-        streak: 1,
-      };
-      const { error: upsertError } = await supabase
-        .from('users')
-        .upsert([defaultProfile], { onConflict: 'id' });
-
-      if (upsertError) {
-        console.error('Failed to initialize profile:', upsertError.message);
+      // Update the streak once per day based on when the user was last active
+      if (profile.last_active !== today) {
+        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        const newStreak = profile.last_active === yesterday ? (profile.streak ?? 1) + 1 : 1;
+        const { data: updatedProfile } = await supabase
+          .from('users')
+          .update({ streak: newStreak, last_active: today })
+          .eq('id', userId)
+          .select()
+          .single();
+        setUserStats(updatedProfile ?? { ...profile, streak: newStreak, last_active: today });
+      } else {
+        setUserStats(profile);
       }
+    } else {
+      // Initialize profile row if it doesn't exist
+      const defaultProfile = { id: userId, email: session?.user?.email, level: 1, xp: 0, gold: 0, streak: 1 };
+      await supabase.from('users').insert([defaultProfile]);
       setUserStats(defaultProfile);
     }
 
-    const { data: userTasks, error: tasksError } = await supabase
+    // Fetch user tasks
+    const { data: userTasks } = await supabase
       .from('tasks')
       .select('*')
       .eq('user_id', userId)
@@ -187,24 +182,15 @@ export default function LifeRPG() {
   async function handleCompleteTask(task: any) {
     if (task.completed || !session) return;
 
-    const { error: taskError } = await supabase
-      .from('tasks')
-      .update({ completed: true })
-      .eq('id', task.id);
-    if (taskError) {
-      console.error('Failed to mark task complete:', taskError.message);
-      return;
-    }
+    await supabase.from('tasks').update({ completed: true }).eq('id', task.id);
 
     const xpGained = task.xp_reward;
     const goldGained = 20;
     let newXp = userStats.xp + xpGained;
     let newLevel = userStats.level;
+    const xpNeeded = userStats.level * 100;
 
-    // Loop instead of a single `if`, so an XP reward that crosses more
-    // than one level threshold at once is handled correctly.
-    let xpNeeded = newLevel * 100;
-    while (newXp >= xpNeeded) {
+    if (newXp >= xpNeeded) {
       newLevel += 1;
       newXp -= xpNeeded;
       xpNeeded = newLevel * 100;
@@ -217,23 +203,11 @@ export default function LifeRPG() {
       gold: userStats.gold + goldGained,
     };
 
-    const { error: userError } = await supabase.from('users').update(updated).eq('id', session.user.id);
-    if (userError) {
-      console.error('Failed to save updated stats:', userError.message);
-      return; // don't update local state if the write failed
-    }
-
     setUserStats(updated);
+    setAttributes(updatedAttributes);
     setTasks(tasks.map((t) => (t.id === task.id ? { ...t, completed: true } : t)));
-  }
 
-  // Avoid flashing the login screen while the initial session check resolves
-  if (checkingSession) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
-        Loading...
-      </div>
-    );
+    await supabase.from('users').update(updated).eq('id', session.user.id);
   }
 
   // --- Render: Login / Signup Form ---
@@ -369,7 +343,23 @@ export default function LifeRPG() {
               ></div>
             </div>
           </div>
+
+          <div className="grid grid-cols-3 gap-3 mt-4">
+            <div className="bg-slate-800/50 rounded-lg p-2 text-center">
+              <span className="text-xs text-slate-400 block">STR</span>
+              <span className="text-lg font-black text-orange-400">{attributes.strength}</span>
+            </div>
+            <div className="bg-slate-800/50 rounded-lg p-2 text-center">
+              <span className="text-xs text-slate-400 block">INT</span>
+              <span className="text-lg font-black text-blue-400">{attributes.intellect}</span>
+            </div>
+            <div className="bg-slate-800/50 rounded-lg p-2 text-center">
+              <span className="text-xs text-slate-400 block">DIS</span>
+              <span className="text-lg font-black text-green-400">{attributes.discipline}</span>
+            </div>
+          </div>
         </header>
+        
 
         {/* Add Quest */}
         <section className="bg-slate-900 border border-slate-800 rounded-xl p-6">
