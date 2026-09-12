@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useMemo, FormEvent } from 'react';
+import React, { useState, useEffect, FormEvent } from 'react';
 
 // ==========================================
 // TYPES & DATA
@@ -48,19 +48,16 @@ const SHOP = [
   { id: "h3", cat: "head", name: "Ninja Band", price: 150, icon: "🥷" },
   { id: "h4", cat: "head", name: "Diamond Helm", price: 250, icon: "💎" },
   { id: "h5", cat: "head", name: "Cyber Visor", price: 400, icon: "🕶️" },
-  
   { id: "a1", cat: "armor", name: "Travel Cloak", price: 50, icon: "🧥" },
   { id: "a2", cat: "armor", name: "Rune Plate", price: 120, icon: "🛡️" },
   { id: "a3", cat: "armor", name: "Mage Robes", price: 140, icon: "🥋" },
   { id: "a4", cat: "armor", name: "Diamond Chest", price: 300, icon: "💠" },
   { id: "a5", cat: "armor", name: "Royal Tuxedo", price: 500, icon: "👔" },
-  
   { id: "s1", cat: "shoes", name: "Trail Boots", price: 35, icon: "🥾" },
   { id: "s2", cat: "shoes", name: "Shadow Treads", price: 80, icon: "👟" },
   { id: "s3", cat: "shoes", name: "Winged Sandals", price: 130, icon: "🪽" },
   { id: "s4", cat: "shoes", name: "Diamond Boots", price: 220, icon: "🧊" },
   { id: "s5", cat: "shoes", name: "Rocket Sneakers", price: 350, icon: "🚀" },
-  
   { id: "p1", cat: "pet", name: "Pixel Fox", price: 70, icon: "🦊" },
   { id: "p2", cat: "pet", name: "Tiny Dragon", price: 150, icon: "🐉" },
   { id: "p3", cat: "pet", name: "Spirit Owl", price: 200, icon: "🦉" },
@@ -104,7 +101,7 @@ const GlobalCSS = () => (
     html, body { font-family: 'Outfit', sans-serif; scroll-behavior: smooth; }
     body { background: radial-gradient(circle at top, #1e293b, #0f172a); min-height: 100vh; margin: 0; }
     
-    .glass-panel { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.3); box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05); }
+    .glass-panel { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.3); box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05); }
     .dark .glass-panel { background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255,255,255,0.05); }
     
     .glow-gold { box-shadow: 0 0 0 1px rgba(232,197,71,.5), 0 0 22px rgba(232,197,71,.2); }
@@ -131,8 +128,10 @@ const GlobalCSS = () => (
     .front { width: var(--w); height: var(--h); transform: translateZ(calc(var(--d) / 2)); }
     .right { width: var(--d); height: var(--h); transform: rotateY(90deg) translateZ(calc(var(--w) / 2)); filter: brightness(0.85); }
     .top   { width: var(--w); height: var(--d); transform: rotateX(90deg) translateZ(calc(var(--h) / 2)); filter: brightness(1.2); }
-    
+
+    /* Avatar mapping */
     .c-head  { --w: 44px; --h: 44px; --d: 44px; --c: #e0ac69; top: 20px; left: 58px; z-index: 10; }
+    .c-head .front { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44"><rect x="8" y="16" width="6" height="6" fill="%232d3748"/><rect x="30" y="16" width="6" height="6" fill="%232d3748"/><rect x="18" y="28" width="8" height="4" fill="%23718096"/></svg>'); background-size: cover; }
     .c-body  { --w: 44px; --h: 66px; --d: 22px; --c: #0ea5e9; top: 64px; left: 58px; z-index: 5; }
     .c-arm-l { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 40px; transform: translateZ(-2px); z-index: 4; }
     .c-arm-r { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 102px; transform: translateZ(2px); z-index: 6; }
@@ -151,6 +150,7 @@ const GlobalCSS = () => (
 
 export default function LifeRPGApp() {
   const [db, setDb] = useState<Database>(() => {
+    if (typeof window === 'undefined') return { users: {}, session: null };
     try {
       const stored = localStorage.getItem(STORE_KEY);
       return stored ? JSON.parse(stored) : { users: {}, session: null };
@@ -160,34 +160,31 @@ export default function LifeRPGApp() {
   });
 
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-
-useEffect(() => {
-  const savedTheme = localStorage.getItem("liferpg.theme") as 'dark' | 'light';
-  if (savedTheme) {
-    setTheme(savedTheme);
-  }
-}, []);
-
   const [modal, setModal] = useState<{ open: boolean; title: React.ReactNode; body: React.ReactNode }>({ open: false, title: '', body: '' });
   const [nav, setNav] = useState<'dashboard' | 'shop' | 'leaderboard'>('dashboard');
 
-  // Save on every DB change
   useEffect(() => {
-    localStorage.setItem(STORE_KEY, JSON.stringify(db));
+    if (typeof window !== 'undefined') {
+      const savedTheme = localStorage.getItem("liferpg.theme") as 'dark' | 'light';
+      if (savedTheme) setTheme(savedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORE_KEY, JSON.stringify(db));
+    }
   }, [db]);
 
-  // Apply Theme
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
-    localStorage.setItem("liferpg.theme", theme);
+    if (typeof window !== 'undefined') localStorage.setItem("liferpg.theme", theme);
   }, [theme]);
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
-
   const sessionUser = db.session ? db.users[db.session] : null;
 
-  // Helper to deep clone and update user safely
   const patchUser = (updater: (u: User) => void) => {
     if (!db.session) return;
     setDb(prev => {
@@ -212,7 +209,6 @@ useEffect(() => {
     }
   };
 
-  // Check login streak on mount if logged in
   useEffect(() => {
     if (sessionUser) {
       const t = today();
@@ -318,6 +314,10 @@ function AuthScreen({ db, setDb }: { db: Database, setDb: any }) {
     setTimeout(() => setShake(false), 400);
   };
 
+  const handleOAuth = (provider: string) => {
+    alert(`Sign in with ${provider} clicked! Connect a backend like Supabase or Firebase to enable this.`);
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-md glass-panel rounded-[2rem] p-8 shadow-2xl relative overflow-hidden">
@@ -346,6 +346,30 @@ function AuthScreen({ db, setDb }: { db: Database, setDb: any }) {
             Enter the Realm
           </button>
         </form>
+
+        <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-700/50">
+          <p className="text-xs text-center text-slate-400 mb-4 font-bold tracking-widest uppercase">Or connect with</p>
+          <div className="grid grid-cols-3 gap-3">
+            <button type="button" onClick={() => handleOAuth('Google')} className="flex justify-center py-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 hover:scale-105 transition-transform shadow-sm">
+              <svg className="w-6 h-6" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.58c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+              </svg>
+            </button>
+            <button type="button" onClick={() => handleOAuth('Apple')} className="flex justify-center py-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 hover:scale-105 transition-transform shadow-sm">
+              <svg className="w-6 h-6 dark:fill-white fill-black" viewBox="0 0 24 24">
+                <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.04 2.26-.74 3.58-.79 2.12-.04 3.65.88 4.52 2.11-3.97 2.37-3.32 7.7.46 9.21-1.01 2.28-2.2 4.19-3.64 5.64zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
+              </svg>
+            </button>
+            <button type="button" onClick={() => handleOAuth('Facebook')} className="flex justify-center py-3 rounded-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-700 hover:scale-105 transition-transform shadow-sm">
+              <svg className="w-6 h-6" fill="#1877F2" viewBox="0 0 24 24">
+                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.469h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.469h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
