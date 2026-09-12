@@ -130,13 +130,21 @@ const GlobalCSS = () => (
     .top   { width: var(--w); height: var(--d); transform: rotateX(90deg) translateZ(calc(var(--h) / 2)); filter: brightness(1.2); }
 
     /* Avatar mapping */
-    .c-head  { --w: 44px; --h: 44px; --d: 44px; --c: #e0ac69; top: 20px; left: 58px; z-index: 10; }
-    .c-head .front { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44"><rect x="8" y="16" width="6" height="6" fill="%232d3748"/><rect x="30" y="16" width="6" height="6" fill="%232d3748"/><rect x="18" y="28" width="8" height="4" fill="%23718096"/></svg>'); background-size: cover; }
-    .c-body  { --w: 44px; --h: 66px; --d: 22px; --c: #0ea5e9; top: 64px; left: 58px; z-index: 5; }
-    .c-arm-l { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 40px; transform: translateZ(-2px); z-index: 4; }
-    .c-arm-r { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 102px; transform: translateZ(2px); z-index: 6; }
-    .c-leg-l { --w: 21px; --h: 60px; --d: 22px; --c: #312e81; top: 130px; left: 58px; z-index: 4; }
-    .c-leg-r { --w: 21px; --h: 60px; --d: 22px; --c: #312e81; top: 130px; left: 81px; z-index: 5; }
+    /* Remove z-index to allow native preserve-3d depth sorting */
+    .c-head  { --w: 44px; --h: 44px; --d: 44px; --c: #e0ac69; top: 20px; left: 58px; }
+    .c-head .front { 
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44"><rect x="8" y="16" width="6" height="6" fill="%232d3748"/><rect x="30" y="16" width="6" height="6" fill="%232d3748"/><rect x="18" y="28" width="8" height="4" fill="%23718096"/></svg>'); 
+      background-size: cover; 
+      align-items: flex-start; /* Push content to the top */
+    }
+    /* Style the head equipment to sit like a hat */
+    .head-equip { transform: translateY(-14px) scale(1.4); filter: drop-shadow(0 4px 2px rgba(0,0,0,0.4)); }
+    
+    .c-body  { --w: 44px; --h: 66px; --d: 22px; --c: #0ea5e9; top: 64px; left: 58px; }
+    .c-arm-l { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 40px; }
+    .c-arm-r { --w: 18px; --h: 60px; --d: 22px; --c: #e0ac69; top: 64px; left: 102px; }
+    .c-leg-l { --w: 21px; --h: 60px; --d: 22px; --c: #312e81; top: 130px; left: 58px; }
+    .c-leg-r { --w: 21px; --h: 60px; --d: 22px; --c: #312e81; top: 130px; left: 81px; }
     
     .c-pet { --w: 28px; --h: 28px; --d: 28px; --c: rgba(255,255,255,0.1); top: 140px; left: 5px; transform: translateZ(30px); animation: pet-bob 2.5s infinite ease-in-out; border: none !important; }
     .c-pet .face { background: transparent; border: none; font-size: 2.2rem; filter: drop-shadow(0 10px 10px rgba(0,0,0,0.3)); }
