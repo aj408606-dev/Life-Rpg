@@ -13,6 +13,7 @@ export default function LifeRPG() {
   const [authError, setAuthError] = useState('');
   const [authMessage, setAuthMessage] = useState(''); // e.g. "check your email"
   const [authLoading, setAuthLoading] = useState(false);
+  const [resetCooldown, setResetCooldown] = useState(0); // seconds left before "Forgot password?" can be clicked again
 
   const [userStats, setUserStats] = useState({ level: 1, xp: 0, gold: 0, streak: 1 });
   const [tasks, setTasks] = useState<any[]>([]);
@@ -46,10 +47,16 @@ export default function LifeRPG() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Countdown timer for the reset-password cooldown
+  useEffect(() => {
+    if (resetCooldown <= 0) return;
+    const t = setInterval(() => setResetCooldown((s) => s - 1), 1000);
+    return () => clearInterval(t);
+  }, [resetCooldown]);
+
   // 2. Fetch User Stats and Tasks
-  // BUG FIX: email is now passed in explicitly instead of reading the
-  // `session` state variable, which is stale here due to React's async
-  // state updates (it was previously always undefined on first login).
+  // email is passed in explicitly instead of reading the `session` state
+  // variable, which is stale here due to React's async state updates.
   async function fetchUserData(userId: string, userEmail?: string) {
     setLoading(true);
 
@@ -62,9 +69,9 @@ export default function LifeRPG() {
     if (profile) {
       setUserStats(profile);
     } else {
-      // BUG FIX: upsert instead of insert avoids a race condition where
-      // two near-simultaneous calls (e.g. React Strict Mode double-invoking
-      // effects in dev) both try to insert the same row and one fails/duplicates.
+      // upsert instead of insert avoids a race condition where two
+      // near-simultaneous calls (e.g. React Strict Mode double-invoking
+      // effects in dev) both try to insert the same row.
       const defaultProfile = {
         id: userId,
         email: userEmail ?? null,
@@ -105,10 +112,13 @@ export default function LifeRPG() {
       if (authMode === 'signup') {
         const { data, error } = await supabase.auth.signUp({ email, password });
         if (error) {
-          setAuthError(error.message);
+          setAuthError(
+            error.message.toLowerCase().includes('rate limit')
+              ? 'Too many email requests right now — please wait a bit before trying again.'
+              : error.message
+          );
         } else if (data.user && !data.session) {
-          // Email confirmation is required on this Supabase project —
-          // previously the UI gave zero feedback here and looked frozen.
+          // Email confirmation required on this Supabase project
           setAuthMessage('Account created! Check your email to confirm before logging in.');
         }
       } else {
@@ -122,6 +132,7 @@ export default function LifeRPG() {
 
   // Forgot password
   async function handleForgotPassword() {
+    if (resetCooldown > 0) return;
     setAuthError('');
     setAuthMessage('');
     if (!email.trim()) {
@@ -134,9 +145,14 @@ export default function LifeRPG() {
         redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
       });
       if (error) {
-        setAuthError(error.message);
+        setAuthError(
+          error.message.toLowerCase().includes('rate limit')
+            ? 'Too many reset emails requested — please wait before trying again.'
+            : error.message
+        );
       } else {
         setAuthMessage('Password reset email sent — check your inbox.');
+        setResetCooldown(60); // 60s before it can be clicked again
       }
     } finally {
       setAuthLoading(false);
@@ -185,8 +201,8 @@ export default function LifeRPG() {
     let newXp = userStats.xp + xpGained;
     let newLevel = userStats.level;
 
-    // BUG FIX: loop instead of a single `if`, so an XP reward that crosses
-    // more than one level threshold at once is handled correctly.
+    // Loop instead of a single `if`, so an XP reward that crosses more
+    // than one level threshold at once is handled correctly.
     let xpNeeded = newLevel * 100;
     while (newXp >= xpNeeded) {
       newLevel += 1;
@@ -279,10 +295,10 @@ export default function LifeRPG() {
           {authMode === 'login' && (
             <button
               onClick={handleForgotPassword}
-              disabled={authLoading}
-              className="block mx-auto text-xs text-slate-400 underline mt-3 hover:text-slate-300"
+              disabled={authLoading || resetCooldown > 0}
+              className="block mx-auto text-xs text-slate-400 underline mt-3 hover:text-slate-300 disabled:opacity-50"
             >
-              Forgot password?
+              {resetCooldown > 0 ? `Try again in ${resetCooldown}s` : 'Forgot password?'}
             </button>
           )}
 
