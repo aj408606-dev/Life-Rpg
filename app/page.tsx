@@ -5,10 +5,14 @@ import { supabase } from '../lib/supabase';
 
 export default function LifeRPG() {
   const [session, setSession] = useState<any>(null);
+  const [checkingSession, setCheckingSession] = useState(true); // avoids login-page flash
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('signup');
   const [authError, setAuthError] = useState('');
+  const [authMessage, setAuthMessage] = useState(''); // e.g. "check your email"
+  const [authLoading, setAuthLoading] = useState(false);
 
   const [userStats, setUserStats] = useState({ level: 1, xp: 0, gold: 0, streak: 1 });
   const [tasks, setTasks] = useState<any[]>([]);
@@ -20,8 +24,9 @@ export default function LifeRPG() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setCheckingSession(false);
       if (session) {
-        fetchUserData(session.user.id);
+        fetchUserData(session.user.id, session.user.email);
       } else {
         setLoading(false);
       }
@@ -29,8 +34,9 @@ export default function LifeRPG() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setCheckingSession(false);
       if (session) {
-        fetchUserData(session.user.id);
+        fetchUserData(session.user.id, session.user.email);
       } else {
         setTasks([]);
         setLoading(false);
@@ -41,27 +47,49 @@ export default function LifeRPG() {
   }, []);
 
   // 2. Fetch User Stats and Tasks
-  async function fetchUserData(userId: string) {
+  // BUG FIX: email is now passed in explicitly instead of reading the
+  // `session` state variable, which is stale here due to React's async
+  // state updates (it was previously always undefined on first login).
+  async function fetchUserData(userId: string, userEmail?: string) {
     setLoading(true);
 
-    // Fetch user profile stats
-    const { data: profile } = await supabase.from('users').select('*').eq('id', userId).single();
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
     if (profile) {
       setUserStats(profile);
     } else {
-      // Initialize profile row if it doesn't exist
-      const defaultProfile = { id: userId, email: session?.user?.email, level: 1, xp: 0, gold: 0, streak: 1 };
-      await supabase.from('users').insert([defaultProfile]);
+      // BUG FIX: upsert instead of insert avoids a race condition where
+      // two near-simultaneous calls (e.g. React Strict Mode double-invoking
+      // effects in dev) both try to insert the same row and one fails/duplicates.
+      const defaultProfile = {
+        id: userId,
+        email: userEmail ?? null,
+        level: 1,
+        xp: 0,
+        gold: 0,
+        streak: 1,
+      };
+      const { error: upsertError } = await supabase
+        .from('users')
+        .upsert([defaultProfile], { onConflict: 'id' });
+
+      if (upsertError) {
+        console.error('Failed to initialize profile:', upsertError.message);
+      }
       setUserStats(defaultProfile);
     }
 
-    // Fetch user tasks
-    const { data: userTasks } = await supabase
+    const { data: userTasks, error: tasksError } = await supabase
       .from('tasks')
       .select('*')
       .eq('user_id', userId)
       .order('id', { ascending: false });
 
+    if (tasksError) console.error('Failed to load tasks:', tasksError.message);
     if (userTasks) setTasks(userTasks);
     setLoading(false);
   }
@@ -70,13 +98,48 @@ export default function LifeRPG() {
   async function handleAuth(e: React.FormEvent) {
     e.preventDefault();
     setAuthError('');
+    setAuthMessage('');
+    setAuthLoading(true);
 
-    if (authMode === 'signup') {
-      const { error } = await supabase.auth.signUp({ email, password });
-      if (error) setAuthError(error.message);
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setAuthError(error.message);
+    try {
+      if (authMode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) {
+          setAuthError(error.message);
+        } else if (data.user && !data.session) {
+          // Email confirmation is required on this Supabase project —
+          // previously the UI gave zero feedback here and looked frozen.
+          setAuthMessage('Account created! Check your email to confirm before logging in.');
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) setAuthError(error.message);
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  // Forgot password
+  async function handleForgotPassword() {
+    setAuthError('');
+    setAuthMessage('');
+    if (!email.trim()) {
+      setAuthError('Enter your email above first, then click "Forgot password?"');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+      if (error) {
+        setAuthError(error.message);
+      } else {
+        setAuthMessage('Password reset email sent — check your inbox.');
+      }
+    } finally {
+      setAuthLoading(false);
     }
   }
 
@@ -93,7 +156,11 @@ export default function LifeRPG() {
       completed: false,
     };
 
-    const { data } = await supabase.from('tasks').insert([newTask]).select();
+    const { data, error } = await supabase.from('tasks').insert([newTask]).select();
+    if (error) {
+      console.error('Failed to add task:', error.message);
+      return;
+    }
     if (data) {
       setTasks([data[0], ...tasks]);
       setTitle('');
@@ -104,17 +171,27 @@ export default function LifeRPG() {
   async function handleCompleteTask(task: any) {
     if (task.completed || !session) return;
 
-    await supabase.from('tasks').update({ completed: true }).eq('id', task.id);
+    const { error: taskError } = await supabase
+      .from('tasks')
+      .update({ completed: true })
+      .eq('id', task.id);
+    if (taskError) {
+      console.error('Failed to mark task complete:', taskError.message);
+      return;
+    }
 
     const xpGained = task.xp_reward;
     const goldGained = 20;
     let newXp = userStats.xp + xpGained;
     let newLevel = userStats.level;
-    const xpNeeded = userStats.level * 100;
 
-    if (newXp >= xpNeeded) {
+    // BUG FIX: loop instead of a single `if`, so an XP reward that crosses
+    // more than one level threshold at once is handled correctly.
+    let xpNeeded = newLevel * 100;
+    while (newXp >= xpNeeded) {
       newLevel += 1;
-      newXp = newXp - xpNeeded;
+      newXp -= xpNeeded;
+      xpNeeded = newLevel * 100;
     }
 
     const updated = {
@@ -124,10 +201,23 @@ export default function LifeRPG() {
       gold: userStats.gold + goldGained,
     };
 
+    const { error: userError } = await supabase.from('users').update(updated).eq('id', session.user.id);
+    if (userError) {
+      console.error('Failed to save updated stats:', userError.message);
+      return; // don't update local state if the write failed
+    }
+
     setUserStats(updated);
     setTasks(tasks.map((t) => (t.id === task.id ? { ...t, completed: true } : t)));
+  }
 
-    await supabase.from('users').update(updated).eq('id', session.user.id);
+  // Avoid flashing the login screen while the initial session check resolves
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
+        Loading...
+      </div>
+    );
   }
 
   // --- Render: Login / Signup Form ---
@@ -141,6 +231,11 @@ export default function LifeRPG() {
           {authError && (
             <div className="bg-red-500/10 border border-red-500 text-red-400 p-3 rounded-lg text-sm mb-4">
               {authError}
+            </div>
+          )}
+          {authMessage && (
+            <div className="bg-emerald-500/10 border border-emerald-500 text-emerald-400 p-3 rounded-lg text-sm mb-4">
+              {authMessage}
             </div>
           )}
 
@@ -161,6 +256,7 @@ export default function LifeRPG() {
               <input
                 type="password"
                 required
+                minLength={6}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500"
@@ -169,16 +265,35 @@ export default function LifeRPG() {
             </div>
             <button
               type="submit"
-              className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold p-3 rounded-lg transition"
+              disabled={authLoading}
+              className="w-full bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold p-3 rounded-lg transition"
             >
-              {authMode === 'signup' ? 'Create Hero Account' : 'Enter the Realm (Login)'}
+              {authLoading
+                ? 'Please wait...'
+                : authMode === 'signup'
+                ? 'Create Hero Account'
+                : 'Enter the Realm (Login)'}
             </button>
           </form>
+
+          {authMode === 'login' && (
+            <button
+              onClick={handleForgotPassword}
+              disabled={authLoading}
+              className="block mx-auto text-xs text-slate-400 underline mt-3 hover:text-slate-300"
+            >
+              Forgot password?
+            </button>
+          )}
 
           <p className="text-center text-xs text-slate-400 mt-4">
             {authMode === 'signup' ? 'Already an adventurer? ' : "Don't have an account? "}
             <button
-              onClick={() => setAuthMode(authMode === 'signup' ? 'login' : 'signup')}
+              onClick={() => {
+                setAuthMode(authMode === 'signup' ? 'login' : 'signup');
+                setAuthError('');
+                setAuthMessage('');
+              }}
               className="text-cyan-400 underline font-semibold"
             >
               {authMode === 'signup' ? 'Login' : 'Sign Up'}
@@ -195,7 +310,7 @@ export default function LifeRPG() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
       <div className="max-w-3xl mx-auto space-y-6">
-        
+
         {/* Header Bar with Signout */}
         <div className="flex justify-between items-center">
           <span className="text-sm text-slate-400">Logged in as: <b className="text-cyan-400">{session.user.email}</b></span>
